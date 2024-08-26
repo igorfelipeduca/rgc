@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v39/github"
@@ -24,10 +26,25 @@ type ComponentNode struct {
 	Parent    *ComponentNode
 }
 
-var createdComponents = make(map[string]Component)
-var rootComponents []*ComponentNode
+var (
+	createdComponents = make(map[string]Component)
+	rootComponents    []*ComponentNode
+	componentsMutex   sync.Mutex
+)
 
 func main() {
+	// Check if repository is provided as command-line argument
+	if len(os.Args) < 2 {
+		log.Fatal("Please provide the repository in the format 'username/repo'")
+	}
+
+	// Parse repository information
+	repoInfo := strings.Split(os.Args[1], "/")
+	if len(repoInfo) != 2 {
+		log.Fatal("Invalid repository format. Please use 'username/repo'")
+	}
+	owner, repo := repoInfo[0], repoInfo[1]
+
 	// Read GitHub token from environment variable
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
@@ -41,10 +58,6 @@ func main() {
 	)
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
-
-	// Specify the repository owner and name
-	owner := "igorfelipeduca"
-	repo := "fictional-octo-broccoli"
 
 	// Create a context with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
@@ -74,17 +87,31 @@ func ProcessRepository(ctx context.Context, client *github.Client, owner, repo s
 		return fmt.Errorf("error getting repository contents: %v", err)
 	}
 
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(dirContent))
+
 	for _, content := range dirContent {
-		if *content.Type == "dir" {
-			err = processDirectory(ctx, client, owner, repo, *content.Path)
-			if err != nil {
-				return err
+		wg.Add(1)
+		go func(content *github.RepositoryContent) {
+			defer wg.Done()
+			var err error
+			if *content.Type == "dir" {
+				err = processDirectory(ctx, client, owner, repo, *content.Path)
+			} else if *content.Type == "file" {
+				err = processFile(ctx, client, owner, repo, *content.Path)
 			}
-		} else if *content.Type == "file" {
-			err = processFile(ctx, client, owner, repo, *content.Path)
 			if err != nil {
-				return err
+				errChan <- err
 			}
+		}(content)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		if err != nil {
+			return err
 		}
 	}
 
@@ -94,20 +121,35 @@ func ProcessRepository(ctx context.Context, client *github.Client, owner, repo s
 func processDirectory(ctx context.Context, client *github.Client, owner, repo, path string) error {
 	_, dirContent, _, err := client.Repositories.GetContents(ctx, owner, repo, path, nil)
 	if err != nil {
-		return fmt.Errorf("error getting directory contents: %v", err)
+		fmt.Printf("Warning: Error getting directory contents for %s: %v\n", path, err)
+		return nil
 	}
 
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(dirContent))
+
 	for _, content := range dirContent {
-		if *content.Type == "dir" {
-			err = processDirectory(ctx, client, owner, repo, *content.Path)
-			if err != nil {
-				return err
+		wg.Add(1)
+		go func(content *github.RepositoryContent) {
+			defer wg.Done()
+			var err error
+			if *content.Type == "dir" {
+				err = processDirectory(ctx, client, owner, repo, *content.Path)
+			} else if *content.Type == "file" {
+				err = processFile(ctx, client, owner, repo, *content.Path)
 			}
-		} else if *content.Type == "file" {
-			err = processFile(ctx, client, owner, repo, *content.Path)
 			if err != nil {
-				return err
+				errChan <- err
 			}
+		}(content)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		if err != nil {
+			return err
 		}
 	}
 
@@ -117,12 +159,19 @@ func processDirectory(ctx context.Context, client *github.Client, owner, repo, p
 func processFile(ctx context.Context, client *github.Client, owner, repo, path string) error {
 	fileContent, _, _, err := client.Repositories.GetContents(ctx, owner, repo, path, nil)
 	if err != nil {
-		return fmt.Errorf("error getting file contents: %v", err)
+		fmt.Printf("Warning: Error getting file contents for %s: %v\n", path, err)
+		return nil
+	}
+
+	if fileContent.GetSize() > 1000000 { // Skip files larger than 1MB
+		fmt.Printf("Warning: Skipping large file %s (size: %d bytes)\n", path, fileContent.GetSize())
+		return nil
 	}
 
 	content, err := fileContent.GetContent()
 	if err != nil {
-		return fmt.Errorf("error decoding file contents: %v", err)
+		fmt.Printf("Warning: Error decoding content of %s: %v\n", path, err)
+		return nil
 	}
 
 	extractComponents(content, path)
@@ -132,6 +181,9 @@ func processFile(ctx context.Context, client *github.Client, owner, repo, path s
 func extractComponents(content, path string) {
 	exportRegex := regexp.MustCompile(`(?m)^export\s+(default\s+)?(function|class|const)\s+(\w+)|export\s+const\s+(\w+)\s*=\s*(\(|\w+\s*=>)`)
 	matches := exportRegex.FindAllStringSubmatch(content, -1)
+
+	componentsMutex.Lock()
+	defer componentsMutex.Unlock()
 
 	for _, match := range matches {
 		componentName := match[3]
@@ -163,28 +215,44 @@ func BuildComponentTree(ctx context.Context, client *github.Client, owner, repo 
 		componentNodes[name] = &ComponentNode{Component: comp}
 	}
 
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(componentNodes))
+
 	for _, node := range componentNodes {
-		fileContent, _, _, err := client.Repositories.GetContents(ctx, owner, repo, node.Component.Path, nil)
-		if err != nil {
-			fmt.Printf("Warning: Error reading file %s: %v\n", node.Component.Path, err)
-			continue
-		}
-
-		content, err := fileContent.GetContent()
-		if err != nil {
-			fmt.Printf("Warning: Error decoding content of %s: %v\n", node.Component.Path, err)
-			continue
-		}
-
-		childRegex := regexp.MustCompile(`<([A-Z]\w+)[\s/>]`)
-		matches := childRegex.FindAllStringSubmatch(content, -1)
-
-		for _, match := range matches {
-			childName := match[1]
-			if childNode, exists := componentNodes[childName]; exists {
-				node.Children = append(node.Children, childNode)
-				childNode.Parent = node
+		wg.Add(1)
+		go func(node *ComponentNode) {
+			defer wg.Done()
+			fileContent, _, _, err := client.Repositories.GetContents(ctx, owner, repo, node.Component.Path, nil)
+			if err != nil {
+				errChan <- fmt.Errorf("error reading file %s: %v", node.Component.Path, err)
+				return
 			}
+
+			content, err := fileContent.GetContent()
+			if err != nil {
+				errChan <- fmt.Errorf("error decoding content of %s: %v", node.Component.Path, err)
+				return
+			}
+
+			childRegex := regexp.MustCompile(`<([A-Z]\w+)[\s/>]`)
+			matches := childRegex.FindAllStringSubmatch(content, -1)
+
+			for _, match := range matches {
+				childName := match[1]
+				if childNode, exists := componentNodes[childName]; exists {
+					node.Children = append(node.Children, childNode)
+					childNode.Parent = node
+				}
+			}
+		}(node)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		if err != nil {
+			fmt.Printf("Warning: %v\n", err)
 		}
 	}
 
@@ -198,8 +266,12 @@ func BuildComponentTree(ctx context.Context, client *github.Client, owner, repo 
 }
 
 func PrintResults() {
-	fmt.Println("\nComponent Tree:")
-	printComponentTree(rootComponents, 0)
+	jsonData, err := json.MarshalIndent(rootComponents, "", "  ")
+	if err != nil {
+		fmt.Printf("Error marshaling JSON: %v\n", err)
+		return
+	}
+	fmt.Println(string(jsonData))
 }
 
 func printComponentTree(nodes []*ComponentNode, depth int) {
