@@ -19,6 +19,10 @@ RGC is a tool designed to analyze React component structures in GitHub repositor
      ```
      export GITHUB_TOKEN=your_token_here
      ```
+   - Disclaimer: If you're running RGC on a Windows machine, you'll need to use `set` instead of `export`. So the command would be:
+     ```
+     set GITHUB_TOKEN=your_token_here
+     ```
 4. Run the application: `go run src/main.go`
 
 The server will start on port 8080.
@@ -51,6 +55,10 @@ A GitHub Personal Access Token is required to authenticate API requests and avoi
    ```
    export GITHUB_TOKEN=your_token_here
    ```
+ - Disclaimer: If you're running RGC on a Windows machine, you'll need to use `set` instead of `export`. So the command would be:
+  ```
+  set GITHUB_TOKEN=your_token_here
+  ```
 
 Never share your token or commit it to version control. If you suspect your token has been compromised, revoke it immediately and generate a new one.
 
