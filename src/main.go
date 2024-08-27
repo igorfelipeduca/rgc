@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -11,6 +14,9 @@ type RequestPayload struct {
 
 func main() {
 	r := gin.Default()
+
+	r.Use(cors.Default())
+
 	r.POST("/garbage", handleGarbageRequest)
 	r.Run(":8080")
 }
@@ -24,9 +30,9 @@ func handleGarbageRequest(c *gin.Context) {
 
 	result, err := ProcessRepository(payload.Username, payload.Repo)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, result)
+	c.JSON(http.StatusOK, gin.H{"components": result})
 }

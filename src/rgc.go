@@ -23,7 +23,19 @@ type Component struct {
 type ComponentNode struct {
 	Component Component
 	Children  []*ComponentNode
-	Parent    *ComponentNode
+	Parent    *ComponentNode `json:"-"` // This will exclude Parent from JSON serialization
+}
+
+// Custom MarshalJSON method to handle circular references
+func (cn *ComponentNode) MarshalJSON() ([]byte, error) {
+	type Alias ComponentNode
+	return json.Marshal(&struct {
+		*Alias
+		Children []*ComponentNode `json:"children,omitempty"`
+	}{
+		Alias:    (*Alias)(cn),
+		Children: cn.Children,
+	})
 }
 
 var (
@@ -32,10 +44,10 @@ var (
 	componentsMutex   sync.Mutex
 )
 
-func ProcessRepository(username, repo string) (interface{}, error) {
+func ProcessRepository(username, repo string) ([]*ComponentNode, error) {
 	token := os.Getenv("GITHUB_TOKEN")
 	if token == "" {
-		return "", fmt.Errorf("GITHUB_TOKEN environment variable not set")
+		return nil, fmt.Errorf("GITHUB_TOKEN environment variable not set")
 	}
 
 	ctx := context.Background()
@@ -48,20 +60,20 @@ func ProcessRepository(username, repo string) (interface{}, error) {
 
 	err := processRepoContents(ctx, client, username, repo)
 	if err != nil {
-		return "", fmt.Errorf("error processing repository: %v", err)
+		return nil, fmt.Errorf("error processing repository: %v", err)
 	}
 
 	err = buildComponentTree(ctx, client, username, repo)
 	if err != nil {
-		return "", fmt.Errorf("error building component tree: %v", err)
+		return nil, fmt.Errorf("error building component tree: %v", err)
 	}
 
-	jsonData, err := json.MarshalIndent(rootComponents, "", "  ")
+	_, err = json.MarshalIndent(rootComponents, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("error marshaling JSON: %v", err)
+		return nil, fmt.Errorf("error marshaling JSON: %v", err)
 	}
 
-	return string(jsonData), nil
+	return rootComponents, nil
 }
 
 func processRepoContents(ctx context.Context, client *github.Client, owner, repo string) error {
