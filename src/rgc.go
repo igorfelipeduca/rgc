@@ -63,8 +63,8 @@ func ProcessRepository(username, repo string) (*ComponentsResult, error) {
 	client := github.NewClient(tc)
 
 	ctx, cancel := context.WithTimeout(ctx, 75*time.Second)
-	defer cancel()
 
+	defer cancel()
 	err := processRepoContents(ctx, client, username, repo)
 	if err != nil {
 		return nil, fmt.Errorf("error processing repository: %v", err)
@@ -147,8 +147,8 @@ func processDirectory(ctx context.Context, client *github.Client, owner, repo, p
 
 func processFile(path string) {
 	componentsMutex.Lock()
-	defer componentsMutex.Unlock()
 
+	defer componentsMutex.Unlock()
 	if isComponent(path) {
 		name := extractComponentName(path)
 		createdComponents[name] = Component{Name: name, Path: path}
