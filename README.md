@@ -20,9 +20,9 @@ RGC is a tool designed to analyze React component structures in GitHub repositor
      export GITHUB_TOKEN=your_token_here
      ```
    - Disclaimer: If you're running RGC on a Windows machine, you'll need to use `set` instead of `export`. So the command would be:
-     ```
-     set GITHUB_TOKEN=your_token_here
-     ```
+        ```
+        set GITHUB_TOKEN=your_token_here
+        ```
 4. Run the application: `go run src/main.go`
 
 The server will start on port 8080.
